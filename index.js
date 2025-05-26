@@ -1,4 +1,3 @@
-
 const express = require("express");
 const Aki = require("aki-api");
 const app = express();
@@ -7,8 +6,19 @@ const port = 3000;
 app.use(express.json());
 
 const sessions = {};
+const SESSION_TIMEOUT = 10 * 60 * 1000; // 10 دقائق
 
-// بدء اللعبة
+function cleanUpSessions() {
+  const now = Date.now();
+  for (const userId in sessions) {
+    if (now - sessions[userId].lastActive > SESSION_TIMEOUT) {
+      delete sessions[userId];
+    }
+  }
+}
+// تنظيف الجلسات كل 5 دقائق
+setInterval(cleanUpSessions, 5 * 60 * 1000);
+
 app.post("/start", async (req, res) => {
   const userId = req.body.userId;
   if (!userId) return res.status(400).send({ error: "userId is required" });
@@ -17,7 +27,7 @@ app.post("/start", async (req, res) => {
 
   try {
     await aki.start();
-    sessions[userId] = aki;
+    sessions[userId] = { aki, lastActive: Date.now() };
 
     res.send({
       question: aki.question,
@@ -29,18 +39,26 @@ app.post("/start", async (req, res) => {
   }
 });
 
-// الإجابة على سؤال
 app.post("/answer", async (req, res) => {
   const { userId, answerIndex } = req.body;
-  const aki = sessions[userId];
-  if (!aki) return res.status(404).send({ error: "لا توجد جلسة لهذا المستخدم" });
+  const session = sessions[userId];
+  if (!session) return res.status(404).send({ error: "لا توجد جلسة لهذا المستخدم" });
+
+  const { aki } = session;
+
+  if (typeof answerIndex !== "number" || answerIndex < 0 || answerIndex >= aki.answers.length) {
+    return res.status(400).send({ error: "مؤشر إجابة غير صالح" });
+  }
 
   try {
     await aki.step(answerIndex);
+    session.lastActive = Date.now();
 
     if (aki.progress >= 80) {
       await aki.win();
       const topGuess = aki.answers[0];
+
+      delete sessions[userId]; // حذف الجلسة بعد الانتهاء
 
       return res.send({
         finished: true,
@@ -61,15 +79,18 @@ app.post("/answer", async (req, res) => {
   }
 });
 
-// جلب التخمين النهائي
 app.get("/guess", async (req, res) => {
   const userId = req.query.userId;
-  const aki = sessions[userId];
-  if (!aki) return res.status(404).send({ error: "لا توجد جلسة لهذا المستخدم" });
+  const session = sessions[userId];
+  if (!session) return res.status(404).send({ error: "لا توجد جلسة لهذا المستخدم" });
+
+  const { aki } = session;
 
   try {
     await aki.win();
     const topGuess = aki.answers[0];
+
+    delete sessions[userId]; // حذف الجلسة بعد الانتهاء
 
     res.send({
       name: topGuess.name,
